@@ -1,0 +1,87 @@
+name: Build Nunchaku with PyTorch 2.8
+
+on:
+  workflow_dispatch:
+    inputs:
+      torch_version:
+        description: 'PyTorch version'
+        required: true
+        default: '2.8.0'
+      python_version:
+        description: 'Python version'
+        required: true
+        default: '3.12'
+      cuda_version:
+        description: 'CUDA version'
+        required: true
+        default: '12.8'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout nunchaku source
+      uses: actions/checkout@v4
+      with:
+        repository: nunchaku-tech/nunchaku
+        submodules: recursive
+    
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ github.event.inputs.python_version }}
+    
+    - name: Install PyTorch ${{ github.event.inputs.torch_version }} with CUDA ${{ github.event.inputs.cuda_version }}
+      run: |
+        pip install torch==${{ github.event.inputs.torch_version }} torchvision torchaudio --index-url https://download.pytorch.org/whl/cu${{ github.event.inputs.cuda_version }}
+    
+    - name: Install build dependencies
+      run: |
+        pip install build wheel setuptools ninja
+    
+    - name: Modify setup.py for PyTorch 2.8
+      shell: pwsh
+      run: |
+        if (Test-Path setup.py) {
+          (Get-Content setup.py) -replace 'torch>=2\.7,<2\.8', 'torch>=2.8,<2.9' | Set-Content setup.py
+          (Get-Content setup.py) -replace 'torch2\.7', 'torch2.8' | Set-Content setup.py
+        }
+        if (Test-Path pyproject.toml) {
+          (Get-Content pyproject.toml) -replace 'torch>=2\.7,<2\.8', 'torch>=2.8,<2.9' | Set-Content pyproject.toml
+          (Get-Content pyproject.toml) -replace 'torch2\.7', 'torch2.8' | Set-Content pyproject.toml
+        }
+    
+    - name: Build wheel for all GPU architectures
+      shell: pwsh
+      run: |
+        $env:NUNCHAKU_INSTALL_MODE="ALL"
+        $env:NUNCHAKU_BUILD_WHEELS="1"
+        python -m build --wheel --no-isolation
+    
+    - name: Find and rename wheel files
+      shell: pwsh
+      run: |
+        Get-ChildItem -Path dist -Filter *.whl | ForEach-Object {
+          $newName = $_.Name -replace '\+torch2\.7', '+torch2.8'
+          Rename-Item -Path $_.FullName -NewName $newName
+        }
+        Get-ChildItem -Path dist -Filter *.whl | Select-Object Name
+    
+    - name: Upload wheel artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: nunchaku-wheel-py${{ github.event.inputs.python_version }}-torch${{ github.event.inputs.torch_version }}
+        path: dist/*.whl
+        retention-days: 90
+    
+    - name: Display build summary
+      shell: pwsh
+      run: |
+        Write-Host "Build completed successfully!"
+        Write-Host "PyTorch version: ${{ github.event.inputs.torch_version }}"
+        Write-Host "Python version: ${{ github.event.inputs.python_version }}"
+        Write-Host "CUDA version: ${{ github.event.inputs.cuda_version }}"
+        Get-ChildItem -Path dist -Filter *.whl | ForEach-Object {
+          Write-Host "Wheel file: $($_.Name)"
+        }
